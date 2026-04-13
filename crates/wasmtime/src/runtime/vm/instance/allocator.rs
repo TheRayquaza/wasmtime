@@ -11,7 +11,8 @@ use crate::{OpaqueRootScope, Val};
 use core::{mem, ptr};
 use wasmtime_environ::{
     DefinedMemoryIndex, DefinedTableIndex, HostPtr, InitMemory, MemoryInitialization,
-    MemoryInitializer, Module, PrimaryMap, SizeOverflow, TableInitialValue, Trap, VMOffsets,
+    MemoryInitializer, Module, PrimaryMap, SizeOverflow, TableInitialValue, Trap, Tunables,
+    VMOffsets,
 };
 
 #[cfg(feature = "gc")]
@@ -141,6 +142,17 @@ pub unsafe trait InstanceAllocator: Send + Sync {
 
     /// Validate whether a module is allocatable by this instance allocator.
     fn validate_module(&self, module: &Module, offsets: &VMOffsets<HostPtr>) -> Result<()>;
+
+    /// Pre-faults memory pool slots for all CoW images in `module`.
+    ///
+    /// This is a no-op for the on-demand allocator. The pooling allocator
+    /// overrides this to map the CoW image into a pool slot before the first
+    /// real request, eliminating the ~250 ms cold-start latency.
+    ///
+    /// No WebAssembly code is executed.
+    fn prefault_module_memories(&self, _module: &Module, _tunables: &Tunables) -> Result<()> {
+        Ok(()) // default: no-op for on-demand allocator
+    }
 
     /// Validate whether a memory is allocatable by this instance allocator.
     #[cfg(feature = "gc")]

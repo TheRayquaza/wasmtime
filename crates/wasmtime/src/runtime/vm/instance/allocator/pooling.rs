@@ -548,6 +548,58 @@ impl PoolingInstanceAllocator {
             }
         }
     }
+    /// Pre-faults memory pool slots for every defined memory in `module`.
+    ///
+    /// Iterates the module's CoW memory images and calls
+    /// [`MemoryPool::prefault_with_image`] for each one.  Slots that were
+    /// pre-faulted here will be reused cheaply (~5 ms) on the first real
+    /// instantiation of this module instead of paying the full ~250 ms mmap +
+    /// mprotect cost at request time.
+    ///
+    /// No WebAssembly code is executed. Failures are non-fatal (the pool may be
+    /// full, or the module may have no CoW images).
+    pub(crate) fn prefault_module_memories(
+        &self,
+        module: &Module,
+        tunables: &Tunables,
+    ) -> Result<()> {
+        use wasmtime_environ::EntityRef as _;
+
+        let images = match module.memory_images()? {
+            Some(imgs) => imgs,
+            None => return Ok(()),
+        };
+
+        let env_module = module.module();
+        let num_imported = env_module.num_imported_memories;
+
+        for (raw_idx, (_, memory_ty)) in env_module.memories.iter().enumerate() {
+            if raw_idx < num_imported {
+                continue; // skip imported memories
+            }
+            let defined_idx = DefinedMemoryIndex::new(raw_idx - num_imported);
+
+            let image = match images.get_memory_image(defined_idx) {
+                Some(img) => img,
+                None => continue,
+            };
+
+            let initial_size = match memory_ty.minimum_byte_size() {
+                Ok(bytes) => match usize::try_from(bytes) {
+                    Ok(s) => s,
+                    Err(_) => continue,
+                },
+                Err(_) => continue,
+            };
+
+            // Non-fatal: the pool may be full or the image too small to bother.
+            let _ = self
+                .memories
+                .prefault_with_image(image, initial_size, memory_ty, tunables);
+        }
+
+        Ok(())
+    }
 }
 
 #[async_trait::async_trait]
@@ -629,6 +681,14 @@ unsafe impl InstanceAllocator for PoolingInstanceAllocator {
         self.validate_core_instance_size(offsets)
             .context("module instance size does not fit in pooling allocator requirements")?;
         Ok(())
+    }
+
+    fn prefault_module_memories(
+        &self,
+        module: &Module,
+        tunables: &wasmtime_environ::Tunables,
+    ) -> Result<()> {
+        self.prefault_module_memories(module, tunables)
     }
 
     #[cfg(feature = "gc")]

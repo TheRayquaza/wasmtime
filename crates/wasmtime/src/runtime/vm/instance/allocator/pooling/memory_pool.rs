@@ -601,6 +601,76 @@ impl MemoryPool {
         assert!(matches!(prev, ImageSlot::Unknown));
     }
 
+    /// Pre-faults a pool slot with the given CoW memory image without going
+    /// through a full `Store`-based instantiation.
+    ///
+    /// This pays the expensive `mmap` + `mprotect` cost (~250ms) once at
+    /// startup so that subsequent real instantiations with the same image can
+    /// skip the `map_at()` call (they see `images_equal = true`) and only pay
+    /// cheap `mprotect` adjustments (~5 ms).
+    ///
+    /// No WebAssembly code is executed. Returns `Ok(true)` if a slot was
+    /// pre-faulted, `Ok(false)` if the pool had no free slots.
+    pub(crate) fn prefault_with_image(
+        &self,
+        image: &std::sync::Arc<crate::runtime::vm::MemoryImage>,
+        initial_size_bytes: usize,
+        ty: &wasmtime_environ::Memory,
+        tunables: &Tunables,
+    ) -> Result<bool> {
+        // Use stripe 0 (no protection key). Systems without MPK have exactly
+        // one stripe; systems with MPK have more but stripe 0 is always valid.
+        let stripe = match self.stripes.first() {
+            Some(s) => s,
+            None => return Ok(false),
+        };
+
+        // Allocate a slot with no module affinity.
+        let slot_id = match stripe.allocator.alloc(None) {
+            Some(id) => id,
+            None => return Ok(false), // pool full
+        };
+
+        let allocation_index = StripedAllocationIndex(
+            u32::try_from(slot_id.index()).expect("slot index fits u32"),
+        )
+        .as_unstriped_slot_index(0, self.stripes.len());
+
+        let mut slot = self.take_memory_image_slot(allocation_index)?;
+
+        // Establish the CoW mapping: mmap + mprotect.
+        // This is the ~250 ms cost we want to pay here rather than on the
+        // first real request.
+        let instantiate_result =
+            slot.instantiate(initial_size_bytes, Some(image), ty, tunables);
+
+        // We must clear the dirty flag before returning the slot to the pool
+        // (`return_memory_image_slot` asserts `!is_dirty()`). We decommit
+        // inline so we don't need the shared decommit queue.
+        let bytes_resident = if instantiate_result.is_ok() {
+            slot.clear_and_remain_ready(
+                None, // no pagemap tracking for prefault
+                self.keep_resident,
+                |ptr, len| unsafe {
+                    // Use wasmtime's platform-portable decommit.
+                    let _ = crate::runtime::vm::sys::vm::decommit_pages(ptr, len);
+                },
+            )
+            .unwrap_or(0)
+        } else {
+            0
+        };
+
+        // Return slot as `PreviouslyUsed` — CoW image stays mapped, dirty=false.
+        self.return_memory_image_slot(allocation_index, slot);
+
+        // Free the logical slot back to the stripe allocator so it is
+        // immediately available for real allocations.
+        stripe.allocator.free(slot_id, bytes_resident);
+
+        instantiate_result.map(|_| true)
+    }
+
     pub fn unused_warm_slots(&self) -> u32 {
         self.stripes
             .iter()

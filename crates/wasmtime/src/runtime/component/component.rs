@@ -380,6 +380,26 @@ impl Component {
     /// # Ok(())
     /// # }
     /// ```
+    /// Pre-faults the pooling allocator slots for all linear memories used by
+    /// this component's embedded core modules.
+    ///
+    /// This is a startup-time optimization: it pays the `mmap` + `mprotect`
+    /// cost of each WASM linear memory (~250 ms for a typical wasip3 component)
+    /// before the first real request arrives.  No WebAssembly code is executed.
+    ///
+    /// This is a no-op when the engine is not configured with a pooling
+    /// allocator, or when the component has no CoW memory images.
+    pub fn prefault_memory(&self, engine: &crate::Engine) -> crate::Result<()> {
+        let allocator = engine.allocator();
+        let tunables = engine.tunables();
+        for module in self.static_modules() {
+            // Virtual dispatch: PoolingInstanceAllocator does real work,
+            // OnDemandInstanceAllocator returns Ok(()) immediately.
+            allocator.prefault_module_memories(module, tunables)?;
+        }
+        Ok(())
+    }
+
     pub fn component_type(&self) -> types::Component {
         self.with_uninstantiated_instance_type(|ty| types::Component::from(self.inner.ty, ty))
     }
