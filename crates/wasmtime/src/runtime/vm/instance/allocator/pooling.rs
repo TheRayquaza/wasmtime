@@ -560,7 +560,7 @@ impl PoolingInstanceAllocator {
     /// full, or the module may have no CoW images).
     pub(crate) fn prefault_module_memories(
         &self,
-        module: &Module,
+        module: &crate::runtime::module::Module,
         tunables: &Tunables,
     ) -> Result<()> {
         use wasmtime_environ::EntityRef as _;
@@ -685,7 +685,7 @@ unsafe impl InstanceAllocator for PoolingInstanceAllocator {
 
     fn prefault_module_memories(
         &self,
-        module: &Module,
+        module: &crate::runtime::module::Module,
         tunables: &wasmtime_environ::Tunables,
     ) -> Result<()> {
         self.prefault_module_memories(module, tunables)

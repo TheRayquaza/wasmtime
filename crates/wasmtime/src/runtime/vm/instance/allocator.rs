@@ -150,7 +150,11 @@ pub unsafe trait InstanceAllocator: Send + Sync {
     /// real request, eliminating the ~250 ms cold-start latency.
     ///
     /// No WebAssembly code is executed.
-    fn prefault_module_memories(&self, _module: &Module, _tunables: &Tunables) -> Result<()> {
+    fn prefault_module_memories(
+        &self,
+        _module: &crate::runtime::module::Module,
+        _tunables: &Tunables,
+    ) -> Result<()> {
         Ok(()) // default: no-op for on-demand allocator
     }
 
