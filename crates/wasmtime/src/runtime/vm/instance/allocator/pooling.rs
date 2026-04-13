@@ -570,7 +570,7 @@ impl PoolingInstanceAllocator {
             None => return Ok(()),
         };
 
-        let env_module = module.module();
+        let env_module = module.env_module();
         let num_imported = env_module.num_imported_memories;
 
         for (raw_idx, (_, memory_ty)) in env_module.memories.iter().enumerate() {
